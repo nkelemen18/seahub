@@ -43,7 +43,7 @@ from seahub.utils import check_filename_with_rename, EMPTY_SHA1, \
     gen_block_get_url, TRAFFIC_STATS_ENABLED, get_user_traffic_stat,\
     new_merge_with_no_conflict, get_commit_before_new_merge, \
     get_repo_last_modify, gen_file_upload_url, is_org_context, \
-    get_file_type_and_ext, is_pro_version
+    get_file_type_and_ext, is_pro_version, normalize_dir_path
 from seahub.utils.star import get_dir_starred_files
 from seahub.utils.file_types import IMAGE, VIDEO
 from seahub.utils.file_op import check_file_lock, ONLINE_OFFICE_LOCK_OWNER
@@ -212,13 +212,41 @@ def list_lib_dir(request, repo_id):
                             status=400, content_type=content_type)
 
     username = request.user.username
-    path = request.GET.get('p', '/')
-    if path[-1] != '/':
-        path = path + '/'
 
+    path = request.GET.get('p', '/')
+    path = normalize_dir_path(path)
+    dir_id = seafile_api.get_dir_id_by_path(repo.id, path)
+    if not dir_id:
+        err_msg = 'Folder not found.'
+        return HttpResponse(json.dumps({'error': err_msg}),
+                            status=404, content_type=content_type)
+
+    print '-------------'
+    print repo_id, path
     # perm for current dir
-    user_perm = check_folder_permission(request, repo.id, path)
-    if user_perm is None:
+    user_perm = check_folder_permission(request, repo_id, path)
+    if not user_perm:
+
+        converted_repo_path = seafile_api.convert_repo_path(repo_id, path, username)
+        converted_repo_path = json.loads(converted_repo_path)
+        print converted_repo_path
+
+        repo_id = converted_repo_path['repo_id']
+        repo = seafile_api.get_repo(repo_id)
+        if not repo:
+            raise Http404
+
+        path  = converted_repo_path['path']
+        path = normalize_dir_path(path)
+        dir_id = seafile_api.get_dir_id_by_path(repo.id, path)
+        if not dir_id:
+            err_msg = 'Folder not found.'
+            return HttpResponse(json.dumps({'error': err_msg}),
+                                status=404, content_type=content_type)
+
+        user_perm = check_folder_permission(request, repo_id, path)
+
+    if not user_perm:
         err_msg = _(u'Permission denied.')
         return HttpResponse(json.dumps({'error': err_msg}),
                             status=403, content_type=content_type)
@@ -238,18 +266,6 @@ def list_lib_dir(request, repo_id):
     dir_list = []
     file_list = []
 
-    try:
-        dir_id = seafile_api.get_dir_id_by_path(repo.id, path)
-    except SearpcError as e:
-        logger.error(e)
-        err_msg = 'Internal Server Error'
-        return HttpResponse(json.dumps({'error': err_msg}),
-                            status=500, content_type=content_type)
-
-    if not dir_id:
-        err_msg = 'Folder not found.'
-        return HttpResponse(json.dumps({'error': err_msg}),
-                            status=404, content_type=content_type)
 
     dirs = seafserv_threaded_rpc.list_dir_with_perm(repo_id, path, dir_id,
             username, -1, -1)
@@ -382,6 +398,9 @@ def list_lib_dir(request, repo_id):
         dirent_list.append(f_)
 
     result["dirent_list"] = dirent_list
+
+    from pprint import pprint
+    pprint(result)
 
     return HttpResponse(json.dumps(result), content_type=content_type)
 
